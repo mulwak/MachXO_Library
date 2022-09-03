@@ -21,54 +21,35 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-/* This example shows how to access the configuration port in a Lattice MachXO2/3
- *   device.  It utilizes the TinyUSB from Adafruit to expose on-board external Flash 
- *   as USB Mass Storage to simplify file transfers.  A simple serial command interface 
- *   is provided to allow for interacting with the target device. 
- * Following libraries are required
- *   - MachXO (this library)
- *   - Adafruit_TinyUSB https://github.com/adafruit/Adafruit_TinyUSB_Arduino
- *   - Adafruit_SPIFlash https://github.com/adafruit/Adafruit_SPIFlash
- *   - SdFat https://github.com/adafruit/SdFat
+/* Lattice MachXO2（XO3もできるらしいけど試してません）にスレーブSPI（I2Cもできr略）
+ * でアクセスできるシリアルコンソールです。
+ * 書き込みは、コンフィギュレーションデータ（.hex）を格納したSDカードをArduinoに
+ * 接続して行います。UnoとかMegaとかの常識的な8bit系Arduinoで使えるようにするために
+ * 元あったTinyUSBのような凝った仕組みを排除しています。
+ * 依存ライブラリ
+ *  - MachXO （このライブラリ）
+ *  - SdFat https://github.com/adafruit/SdFat（adafruit版でなくてもよいかも:未確認）
  *
- * Note: Adafruit fork of SdFat enabled ENABLE_EXTENDED_TRANSFER_CLASS and FAT12_SUPPORT
- * in SdFatConfig.h, which is needed to run SdFat on external flash. You can use original
- * SdFat library and manually change those macros
- * 
- * This code uses pieces of the Adafruit TinyUSB examples for the file access
+ * [注意]フィーチャ行書き込み機能が未実装です。
+ *       うっかり変なこと書き込む可能性があるよりは無害かも。
+ *
  */
 
 #include "SPI.h"
-#include "SdFat.h"
-#include "Adafruit_SPIFlash.h"
-#include "Adafruit_TinyUSB.h"
 #include "MachXO.h"
+#include "SdFat.h"
+#include "sdios.h"
 
-#if defined(__SAMD51__) || defined(NRF52840_XXAA)
-  Adafruit_FlashTransport_QSPI flashTransport(PIN_QSPI_SCK, PIN_QSPI_CS, PIN_QSPI_IO0, PIN_QSPI_IO1, PIN_QSPI_IO2, PIN_QSPI_IO3);
-#else
-  #if (SPI_INTERFACES_COUNT == 1)
-    Adafruit_FlashTransport_SPI flashTransport(SS, &SPI);
-  #else
-    Adafruit_FlashTransport_SPI flashTransport(SS1, &SPI1);
-  #endif
-#endif
+// Lattice MachXO プログラマ
+//MachXO machXO;  // I2C default address 0b1000000
+//MachXO machXO(5); // ハードウェア SPI, CS pin=5
+#define MOSI (16)
+#define MISO (15)
+#define SCK  (14)
+MachXO machXO(21, MOSI, MISO, SCK); // ソフトウェア SPI, CS pin=21
 
-Adafruit_SPIFlash flash(&flashTransport);
-
-// file system object from SdFat
-FatFileSystem fatfs;
-
-FatFile root;
-FatFile file;
-
-// USB Mass Storage object
-Adafruit_USBD_MSC usb_msc;
-
-// Lattice MachXO Programmer
-MachXO machXO;  // I2C default address 0b1000000
-// MachXO machXO(5); // Hardware SPI, CS pin=5
-// MachXO machXO(5, MOSI, MISO, SCK); // Software SPI, CS pin=5
+// SD chip select pin
+const uint8_t chipSelect = SS;
 
 // Additional Programming I/O
 #define XO_PRGMN (9)
@@ -83,8 +64,13 @@ char c;
 char commandBuf[COMMAND_BUFFER_LENGTH +1];
 const char *delimiters            = ", \t";
 
+// ファイルシステム
+SdFat sd;
+//FatFileSystem fatfs;
+//FatFile root;
+FatFile file;
 
-// the setup function runs once when you press reset or power the board
+// セットアップ
 void setup()
 {
   pinMode(LED_BUILTIN, OUTPUT);
@@ -93,41 +79,28 @@ void setup()
   digitalWrite(XO_PRGMN, LOW);
   digitalWrite(XO_INITN, LOW);
 
-  flash.begin();
+  machXO.begin(1); // デバッグメッセージ付きでmachXOインスタンス起動、引数なしでメッセージなしになる
 
-  // Set disk vendor id, product id and revision with string up to 8, 16, 4 characters respectively
-  usb_msc.setID("Lattice", "MachXO Prog", "0.1");
-
-  // Set callback
-  usb_msc.setReadWriteCallback(msc_read_cb, msc_write_cb, msc_flush_cb);
-
-  // Set disk size, block size should be 512 regardless of spi flash page size
-  usb_msc.setCapacity(flash.pageSize()*flash.numPages()/512, 512);
-
-  // MSC is ready for read/write
-  usb_msc.setUnitReady(true);
-  
-  usb_msc.begin();
-
-  // Init file system on the flash
-  fatfs.begin(&flash);
-
-//  machXO.begin(); // no debug messages
-  machXO.begin(1); // show debug messages
-  
   Serial.begin(115200);
-  while ( !Serial ) delay(10);   // wait for native usb
+  while ( !Serial ) delay(10);   // シリアル通信起動を待つ
 
   Serial.println("Lattice MachXO I2C/SPI Programming example, utilizing");
-  Serial.println("Adafruit TinyUSB Mass Storage External Flash example");
-  Serial.print("JEDEC ID: "); Serial.println(flash.getJEDECID(), HEX);
-  Serial.print("Flash size: "); Serial.println(flash.size());
+  //Serial.println("Adafruit TinyUSB Mass Storage External Flash example");
+  //Serial.print("JEDEC ID: "); Serial.println(flash.getJEDECID(), HEX);
+  //Serial.print("Flash size: "); Serial.println(flash.size());
+  Serial.println("SdFat Storage.");
 
-  changed = true; // to print contents initially
+  changed = true; // 内容を表示するために、変化があったことにする
   charCnt = 0;
   commandBuf[0] = 0;
+
+  // SDカードをオープン
+  if(!sd.begin(chipSelect, SD_SCK_MHZ(50))){
+    Serial.println("sd open error.");
+  }
 }
 
+// メインループ
 void loop()
 {
   while (Serial.available()) {
@@ -144,7 +117,10 @@ void loop()
       case '\b':
         if (charCnt >0) {
           commandBuf[--charCnt] = 0;
-          Serial << byte('\b') << byte(' ') << byte('\b');
+          //Serial << byte('\b') << byte(' ') << byte('\b');
+          Serial.print(byte('\b'));
+          Serial.print(byte(' '));
+          Serial.print(byte('\b'));
         }
         break;
       default:
@@ -155,19 +131,20 @@ void loop()
         break;
     }
   }
-  
+
   if ( changed )
   {
     changed = false;
-    printDir();
+    //printDir();
   }
-  
+
 //  Serial.println();
-  delay(100); // refresh every 0.1 second
+  delay(100); // 0.1 秒毎にリフレッシュ
 
 }
 
-void printBufHEX(char *msg, uint8_t *buf, int cnt) {
+// 16進数表示
+void printBufHEX(String msg, uint8_t *buf, int cnt) {
   Serial.print(msg);
   Serial.print("0x");
   char tmpStr[3];
@@ -178,6 +155,7 @@ void printBufHEX(char *msg, uint8_t *buf, int cnt) {
   Serial.println();
 }
 
+// xo詳細表示
 void xoDetails() {
   uint8_t dataBuf[8];
   machXO.readDeviceID(dataBuf);
@@ -192,11 +170,24 @@ void xoDetails() {
   printBufHEX("Status:  ", dataBuf, 4);
 }
 
+// xoステータス表示
 void xoStatus() {
   uint8_t dataBuf[4];
   machXO.readStatus(dataBuf);
   printBufHEX("Status:  ", dataBuf, 4);
 }
+
+/*
+// CFMを読み取って表示
+// 機能しません
+void xoReadFlash() {
+  uint8_t dataBuf[16];
+  machXO.resetConfigAddress();
+  //machXO.setConfigAddress(0);
+  machXO.readFlash(dataBuf);
+  printBufHEX("Read CFM First Page:  ", dataBuf, 16);
+}
+*/
 
 void xoConfig() {
   machXO.enableConfigOffline();
@@ -209,12 +200,14 @@ void xoRefresh() {
 }
 
 void xoErase() {
+  //machXO.erase(MACHXO_ERASE_CONFIG_FLASH | MACHXO_ERASE_UFM);
   machXO.erase(MACHXO_ERASE_CONFIG_FLASH | MACHXO_ERASE_UFM);
   Serial.println("Erasing...");
   machXO.waitBusy();
   Serial.println("Erased Configuration and UFM");
 }
 
+// プログラミング
 void xoLoadHEX(char *filename) {
   if (!file.open(filename)) {
       Serial.print("Failed to open ");
@@ -242,6 +235,7 @@ void xoLoadHEX(char *filename) {
   }
 }
 
+// PRGMNピンを操作する
 void xoProgPin(char *prog) {
   switch (prog[0]) {
     case '0':
@@ -261,6 +255,7 @@ void xoProgPin(char *prog) {
   }
 }
 
+// Initピンを操作する
 void xoInitPin(char *init) {
   switch (init[0]) {
     case '0':
@@ -280,6 +275,8 @@ void xoInitPin(char *init) {
   }
 }
 
+// ディレクトリを表示
+/*
 void printDir() {
     if ( !root.open("/") )
     {
@@ -308,12 +305,13 @@ void printDir() {
     root.close();  
     Serial.println();
 }
+*/
 
 void printHelp(){
   Serial.println("MachXO Programming Example Command Interface");
   Serial.println("Valid commands:");
   Serial.println("H/h/? - Print this help information");
-  Serial.println("D/d   - Print root directory");
+  //Serial.println("D/d   - Print root directory");
   Serial.println("X/x   - MachXO Device Details");
   Serial.println("S/s   - MaxhXO Status");
   Serial.println("C/c   - MaxhXO enable offline Configuration");
@@ -336,9 +334,16 @@ void printHelp(){
   Serial.println("");
 }
 
+// コマンド実行
 void runCommand() {
   char * commandName = strtok(commandBuf, delimiters);
   switch (commandName[0]) {
+    /*
+    case 'F':
+    case 'f':
+      xoReadFlash();
+      break;
+      */
     case 'H':
     case 'h':
     case '?':
@@ -367,6 +372,7 @@ void runCommand() {
     case 'L':
     case 'l':
       xoLoadHEX(strtok(NULL, delimiters));
+      //xoLoadHEX();
       break;
     case 'P':
     case 'p':
@@ -376,50 +382,16 @@ void runCommand() {
     case 'i':
       xoInitPin(strtok(NULL, delimiters));
       break;
+      /*
     case 'D':
     case 'd':
       printDir();
       break;
+      */
     default:
       Serial.print("Unknown command:  ");
       Serial.println(commandName);
-      printHelp;
+      printHelp();
   }
 }
 
-// Callback invoked when received READ10 command.
-// Copy disk's data to buffer (up to bufsize) and 
-// return number of copied bytes (must be multiple of block size) 
-int32_t msc_read_cb (uint32_t lba, void* buffer, uint32_t bufsize)
-{
-  // Note: SPIFLash Bock API: readBlocks/writeBlocks/syncBlocks
-  // already include 4K sector caching internally. We don't need to cache it, yahhhh!!
-  return flash.readBlocks(lba, (uint8_t*) buffer, bufsize/512) ? bufsize : -1;
-}
-
-// Callback invoked when received WRITE10 command.
-// Process data in buffer to disk's storage and 
-// return number of written bytes (must be multiple of block size)
-int32_t msc_write_cb (uint32_t lba, uint8_t* buffer, uint32_t bufsize)
-{
-  digitalWrite(LED_BUILTIN, HIGH);
-
-  // Note: SPIFLash Bock API: readBlocks/writeBlocks/syncBlocks
-  // already include 4K sector caching internally. We don't need to cache it, yahhhh!!
-  return flash.writeBlocks(lba, buffer, bufsize/512) ? bufsize : -1;
-}
-
-// Callback invoked when WRITE10 command is completed (status received and accepted by host).
-// used to flush any pending cache.
-void msc_flush_cb (void)
-{
-  // sync with flash
-  flash.syncBlocks();
-
-  // clear file system's cache to force refresh
-  fatfs.cacheClear();
-
-  changed = true;
-
-  digitalWrite(LED_BUILTIN, LOW);
-}

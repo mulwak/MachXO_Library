@@ -180,7 +180,7 @@ uint32_t MachXO::eraseUFM() {
 }
 
 uint32_t MachXO::erase(uint32_t flags) {
-  uint8_t obuf[4] = {0x0E, (0x0F & (flags>>16)), 0x00, 0x00};
+  uint8_t obuf[4] = {0x0E, uint8_t(0x0F & uint8_t(flags>>16)), 0x00, 0x00};
   return cmdxfer(obuf, 4, NULL, 0);
 }
 

@@ -44,12 +44,10 @@ extern TwoWire Wire;  /**< Forward declaration of Wire object */
 extern SPIClass SPI;  /**< Forward declaration of SPI object */
 
 // Erase Flag Enumeration
-enum {
-    MACHXO_ERASE_SRAM = (1 << 16),
-    MACHXO_ERASE_FEATURE_ROW = (1 << 17),
-    MACHXO_ERASE_CONFIG_FLASH = (1 << 18),
-    MACHXO_ERASE_UFM = (1 << 19),
-};
+const uint32_t MACHXO_ERASE_SRAM         = uint32_t(1)<<16;
+const uint32_t MACHXO_ERASE_FEATURE_ROW  = uint32_t(2)<<16;
+const uint32_t MACHXO_ERASE_CONFIG_FLASH = uint32_t(4)<<16;
+const uint32_t MACHXO_ERASE_UFM          = uint32_t(8)<<16;
 
 // Class Definition for MachXO Programming library
 class MachXO {
@@ -87,7 +85,8 @@ private:
     TwoWire *_wire; /**< Wire object */
     SPIClass *_spi; /**< SPI object */
     uint8_t _verbose;
-    uint8_t _i2caddr;
+    //uint8_t _i2caddr;
+    int _i2caddr;
     uint8_t spixfer(uint8_t x);
     uint32_t cmdxfer(uint8_t *wbuf, int wcnt, uint8_t *rbuf, int rcnt);
     int8_t _cs, _mosi, _miso, _sck;
